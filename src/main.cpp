@@ -29,7 +29,7 @@
 // rack32   = 21  22
 // LilyGO   = 33  32
 // room8266 =  4   5
-// D1 mini  =  4   0
+// D1 mini  =  4   0 // non standard pins
 
 /*--------------------------- Macros ----------------------------------*/
 #define STRINGIFY(s) STRINGIFY1(s)
