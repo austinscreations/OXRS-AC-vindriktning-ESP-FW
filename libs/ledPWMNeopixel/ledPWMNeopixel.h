@@ -19,48 +19,41 @@
  */
 class neopixelDriver {
 public:
-  neopixelDriver(Adafruit_NeoPixel &neopixel);
+  neopixelDriver();
 
-//   void begin_pixels(const uint8_t addr);
+  void begin_pixels();
 
-//   void colour(uint8_t chans, uint8_t offsets, uint8_t c1, uint8_t c2, uint8_t c3, uint8_t c4, uint8_t c5);
+  void colour(uint8_t r0, uint8_t g0, uint8_t b0, uint8_t w0, uint8_t r1, uint8_t g1, uint8_t b1, uint8_t w1, uint8_t r2, uint8_t g2, uint8_t b2, uint8_t w2); // RGBW - for 3 LEDs
+  void colour(uint8_t r0, uint8_t g0, uint8_t b0, uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2);                                     // RGB  - for 3 LEDs
 
-//   void crossfade(uint8_t chans, uint8_t offsets, uint8_t c1, uint8_t c2, uint8_t c3, uint8_t c4, uint8_t c5);
+  void crossfade(uint8_t r0, uint8_t g0, uint8_t b0, uint8_t w0, uint8_t r1, uint8_t g1, uint8_t b1, uint8_t w1, uint8_t r2, uint8_t g2, uint8_t b2, uint8_t w2); // RGBW - for 3 LEDs
+  void crossfade(uint8_t r0, uint8_t g0, uint8_t b0, uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2);                                     // RGBW - for 3 LEDs
   
-//   uint8_t complete[17] = {false};
+private:
 
-// private:
+void _off();
+
+  int calculateVal(int step, int val, int i);
+  int calculateStep(int prevValue, int endValue);
+
+  void checkFadeComplete();
+
+  int i = 0;
   
-//   // TODO: should these be extended to support more than 5 GPIO channels?
-//   const int channelArray[5] = {0,2,4,6,8};
-//   int ledArray[5] = {0,0,0,0,0};
-
-//   void clear();
-
-//   int calculateVal(int step, int val, int i);
-//   int calculateStep(int prevValue, int endValue);
-
-//   void checkFadeComplete(uint8_t chans);
-
-//   int i = 0;
+  int prev1[3] = {};
+  int prev2[3] = {};
+  int prev3[3] = {};
+  int prev4[3] = {};
   
-//   int prev1[17] = {};
-//   int prev2[17] = {};
-//   int prev3[17] = {};
-//   int prev4[17] = {};
-//   int prev5[17] = {};
+  int c1Val[3] = {};
+  int c2Val[3] = {}; 
+  int c3Val[3] = {};
+  int c4Val[3] = {};
   
-//   int c1Val[17] = {};
-//   int c2Val[17] = {}; 
-//   int c3Val[17] = {};
-//   int c4Val[17] = {};
-//   int c5Val[17] = {};
-  
-//   int step1;
-//   int step2; 
-//   int step3;
-//   int step4;
-//   int step5;
+  int step1[3] = {};
+  int step2[3] = {};
+  int step3[3] = {};
+  int step4[3] = {};
 };
 
 #endif
