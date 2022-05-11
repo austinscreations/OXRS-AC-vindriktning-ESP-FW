@@ -43,7 +43,9 @@
 #include <OXRS_API.h>
 #include <MqttLogger.h>
 
-#include <Adafruit_NeoPixel.h>        // For status LED
+#if defined(LED_RGBW) || defined(LED_RGB)
+#include "ledPWMNeopixel.h"
+#endif
 
 /*--------------------------- Constants ----------------------------------*/
 // Serial
@@ -52,17 +54,34 @@
 // REST API
 #define REST_API_PORT               80
 
+// Supported LED modes
+#define LED_MODE_AUTO               0
+#define LED_MODE_MANUAL             1
+
 // Supported LED states
-#define LED_STATE_AUTO               0
-#define LED_STATE_MANUAL             1
+#define LED_STATE_OFF               0
+#define LED_STATE_ON                1
+
+// Default fade interval (microseconds)
+#define DEFAULT_FADE_INTERVAL_US    500L;
 
 /*--------------------------- Global Variables ---------------------------*/
 // stack size counter (for determine used heap size on ESP8266)
 char * g_stack_start;
 
+// Fade interval used if no explicit interval defined in command payload
+uint32_t g_fade_interval_us = DEFAULT_FADE_INTERVAL_US;
+
 // LED controls
-uint8_t ledState = LED_STATE_AUTO;
-uint8_t ledColour[3];
+uint8_t ledMode = LED_MODE_AUTO;
+uint8_t ledState = LED_STATE_OFF;
+
+/*-------------------------- Internal datatypes --------------------------*/
+// led variables
+uint8_t ledColour[12] = {0};
+uint32_t fadeIntervalUs = DEFAULT_FADE_INTERVAL_US;
+uint32_t lastFadeUs;
+
 
 /*--------------------------- Instantiate Global Objects -----------------*/
 // WiFi client
@@ -79,7 +98,10 @@ OXRS_API api(mqtt);
 // Logging
 MqttLogger logger(mqttClient, "log", MqttLoggerMode::MqttAndSerial);
 
-Adafruit_NeoPixel pixel(1, STATUS_LED_PIN, NEO_GRB + NEO_KHZ800);
+//add the ability to control LEDs with custom library
+#if defined(LED_RGBW) || defined(LED_RGB)
+neopixelDriver pixelDriver;
+#endif
 
 /*--------------------------- JSON builders -----------------*/
 uint32_t getStackSize()
@@ -139,6 +161,13 @@ void getConfigSchemaJson(JsonVariant json)
   configSchema["$schema"] = JSON_SCHEMA_VERSION;
   configSchema["title"] = STRINGIFY(FW_SHORT_NAME);
   configSchema["type"] = "object";
+
+  JsonObject properties = configSchema.createNestedObject("properties");
+
+  JsonObject fadeIntervalUs = properties.createNestedObject("fadeIntervalUs");
+  fadeIntervalUs["type"] = "integer";
+  fadeIntervalUs["minimum"] = 0;
+  fadeIntervalUs["description"] = "Default time to fade from off -> on (and vice versa), in microseconds (defaults to 500us)";
 }
 
 void getCommandSchemaJson(JsonVariant json)
@@ -152,32 +181,74 @@ void getCommandSchemaJson(JsonVariant json)
 
   JsonObject properties = commandSchema.createNestedObject("properties");
 
+  #if defined(LED_RGBW) || defined(LED_RGB)
   JsonObject LED = properties.createNestedObject("LED");
   LED["type"] = "array";
-  LED["description"] = "Set the mode for the onboard LED, in auto mode the led will blink when parsed data is availble, in manual mode the led will only change based on a payload";
+  LED["description"] = "Set the operation of Neopixels - auto will have the leds act like the one ikea had built in show green, yellow, red. Manaul gives you full control over each led along with fade speed and state of on / off";
   
   JsonObject LEDItems = LED.createNestedObject("items");
   LEDItems["type"] = "object";
 
   JsonObject LEDProperties = LEDItems.createNestedObject("properties");
 
+  JsonObject mode = LEDProperties.createNestedObject("mode");
+  mode["type"] = "string";
+  JsonArray modeEnum = mode.createNestedArray("enum");
+  modeEnum.add("auto");
+  modeEnum.add("manual");
+
   JsonObject state = LEDProperties.createNestedObject("state");
   state["type"] = "string";
   JsonArray stateEnum = state.createNestedArray("enum");
-  stateEnum.add("Auto");
-  stateEnum.add("Manual");
+  stateEnum.add("on");
+  stateEnum.add("off");
 
-  JsonObject colour = LEDProperties.createNestedObject("colour");
-  colour["type"] = "array";
-  colour["minItems"] = 1;
-  colour["maxItems"] = 3;
-  JsonObject colourItems = colour.createNestedObject("items");
-  colourItems["type"] = "integer";
-  colourItems["minimum"] = 0;
-  colourItems["maximum"] = 255;
+  JsonObject pixel1 = LEDProperties.createNestedObject("pixel1");
+  pixel1["type"] = "array";
+  #if defined(LED_RGBW)
+  pixel1["maxItems"] = 4;
+  #elif defined(RGB)
+  pixel1["maxItems"] = 3;
+  #endif
+  
+  JsonObject pixel1Items = pixel1.createNestedObject("items");
+  pixel1Items["type"] = "integer";
+  pixel1Items["minimum"] = 0;
+  pixel1Items["maximum"] = 255;
+
+  JsonObject pixel2 = LEDProperties.createNestedObject("pixel2");
+  pixel2["type"] = "array";
+  #if defined(LED_RGBW)
+  pixel2["maxItems"] = 4;
+  #elif defined(RGB)
+  pixel2["maxItems"] = 3;
+  #endif
+  
+  JsonObject pixel2Items = pixel2.createNestedObject("items");
+  pixel2Items["type"] = "integer";
+  pixel2Items["minimum"] = 0;
+  pixel2Items["maximum"] = 255;
+
+  JsonObject pixel3 = LEDProperties.createNestedObject("pixel3");
+  pixel3["type"] = "array";
+  #if defined(LED_RGBW)
+  pixel3["maxItems"] = 4;
+  #elif defined(RGB)
+  pixel3["maxItems"] = 3;
+  #endif
+  
+  JsonObject pixel3Items = pixel3.createNestedObject("items");
+  pixel3Items["type"] = "integer";
+  pixel3Items["minimum"] = 0;
+  pixel3Items["maximum"] = 255;
+
+  JsonObject fadeIntervalUs = LEDProperties.createNestedObject("fadeIntervalUs");
+  fadeIntervalUs["type"] = "integer";
+  fadeIntervalUs["minimum"] = 0;
 
   JsonArray required = LEDItems.createNestedArray("required");
-  required.add("state");
+  required.add("mode");
+  #endif
 
   JsonObject restart = properties.createNestedObject("restart");
   restart["type"] = "boolean";
@@ -194,14 +265,45 @@ void apiAdopt(JsonVariant json)
 }
 
 /*--------------------------- LED -----------------*/
-void pixel_off() {
-    pixel.setPixelColor(0,0,0,0);        //  Set pixel's color (in RAM)
-    pixel.show();                        //  Update drivers to match
+void ledFade(uint8_t colour[])
+{
+  if ((micros() - lastFadeUs) > fadeIntervalUs)
+  {
+    #if defined(LED_RGBW) || defined(LED_RGB)
+      #if defined(LED_RGBW)
+        pixelDriver.crossfade(colour[0], colour[1], colour[2], colour[3], colour[4], colour[5], colour[6], colour[7], colour[8], colour[9], colour[10], colour[11]);
+        // pixelDriver.colour(colour[0], colour[1], colour[2], colour[3], colour[4], colour[5], colour[6], colour[7], colour[8], colour[9], colour[10], colour[11]);
+      #elif defined(LED_RGB)
+        // pixelDriver.crossfade(colour[0], colour[1], colour[2], colour[3], colour[4], colour[5], colour[6], colour[7], colour[8]);
+        pixelDriver.colour(colour[0], colour[1], colour[2], colour[3], colour[4], colour[5], colour[6], colour[7], colour[8]);
+      #endif
+    #endif
+
+    lastFadeUs = micros();
+  }
 }
 
-void pixel_color(uint8_t R, uint8_t G, uint8_t B){
-    pixel.setPixelColor(0,R,G,B);        //  Set pixel's color (in RAM)
-    pixel.show();
+void processPixels()
+{
+  #if defined(LED_RGBW) 
+  uint8_t OFF[12];
+  #elif defined(LED_RGB)
+  uint8_t OFF[9];
+  #endif
+
+  #if defined(LED_RGBW) || defined(LED_RGB)
+  memset(OFF, 0, sizeof(OFF));
+  
+  if (ledState == LED_STATE_OFF)
+  {
+    ledFade(OFF);
+  }
+  else if (ledState == LED_STATE_ON)
+  {
+    // fade
+    ledFade(ledColour);
+  }
+  #endif
 }
 
 /*--------------------------- MQTT/API -----------------*/
@@ -218,14 +320,22 @@ void mqttConnected()
 
   // Log the fact we are now connected
   logger.println("[AQS] mqtt connected");
-  // turn LED dim green to show mqtt connected
-  pixel_color(0,5,0);
+  // turn first LED green to show mqtt connected and device ready
+  #if defined(LED_RGBW) 
+  pixelDriver.colour(0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  #elif defined(LED_RGB)
+  pixelDriver.colour(0, 20, 0, 0, 0, 0, 0, 0, 0);
+  #endif
 }
 
 void mqttDisconnected(int state) 
 {
-  // turn pixel orange for disconencted mqtt
-  pixel_color(15,5,0);
+  // turn first LED orange for disconnected mqtt
+  #if defined(LED_RGBW)
+  pixelDriver.colour(15, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  #elif defined(LED_RGB)
+  pixelDriver.colour(15, 5, 0, 0, 0, 0, 0, 0, 0);
+  #endif
   // Log the disconnect reason
   // See https://github.com/knolleary/pubsubclient/blob/2d228f2f862a95846c65a8518c79f48dfc8f188c/src/PubSubClient.h#L44
   switch (state)
@@ -268,33 +378,53 @@ void mqttCallback(char * topic, uint8_t * payload, unsigned int length)
 
 void mqttConfig(JsonVariant json)
 {
-
+  #if defined(LED_RGBW) || defined(LED_RGB)
+  if (json.containsKey("fadeIntervalUs"))
+  {
+    g_fade_interval_us = json["fadeIntervalUs"].as<uint32_t>();
+    fadeIntervalUs = g_fade_interval_us;
+  }
+  #endif
 }
 
 void jsonLedCommand(JsonVariant json)
 {
-
-  if (json.containsKey("state"))
+  #if defined(LED_RGBW) || defined(LED_RGB)
+  if (json.containsKey("mode"))
   {
-    if (strcmp(json["state"], "Auto") == 0)
+    if (strcmp(json["mode"], "auto") == 0)
     {
-      ledState = LED_STATE_AUTO;
+      ledMode = LED_MODE_AUTO;
     }
-    else if (strcmp(json["state"], "Manual") == 0)
+    else if (strcmp(json["mode"], "manual") == 0)
     {
-      ledState = LED_STATE_MANUAL;
+      ledMode = LED_MODE_MANUAL;
     }
     else 
     {
-      logger.println(F("[ledc] invalid state"));
+      logger.println(F("[AQS] invalid mode"));
     }
   }
 
-  if (ledState == LED_STATE_MANUAL)
+  if (json.containsKey("state"))
   {
-    if (json.containsKey("colour"))
+    if (strcmp(json["state"], "off") == 0)
     {
-      JsonArray array = json["colour"].as<JsonArray>();
+      ledState = LED_STATE_OFF;
+    }
+    else if (strcmp(json["state"], "on") == 0)
+    {
+      ledState = LED_STATE_ON;
+    }
+    else 
+    {
+      logger.println(F("[AQS] invalid state"));
+    }
+  }
+
+    if (json.containsKey("pixel1"))
+    {
+      JsonArray array = json["pixel1"].as<JsonArray>();
       uint8_t colour = 0;
 
       for (JsonVariant v : array)
@@ -302,8 +432,46 @@ void jsonLedCommand(JsonVariant json)
         ledColour[colour++] = v.as<uint8_t>();
       }
     }
-    pixel_color(ledColour[0],ledColour[1],ledColour[2]);
+
+    if (json.containsKey("pixel2"))
+    {
+      JsonArray array = json["pixel2"].as<JsonArray>();
+      #if defined(LED_RGBW)
+      uint8_t colour = 4;
+      #elif defined(LED_RGB)
+      uint8_t colour = 3;
+      #endif
+
+      for (JsonVariant v : array)
+      {
+        ledColour[colour++] = v.as<uint8_t>();
+      }
+    }
+
+    if (json.containsKey("pixel3"))
+    {
+      JsonArray array = json["pixel3"].as<JsonArray>();
+      #if defined(LED_RGBW)
+      uint8_t colour = 8;
+      #elif defined(LED_RGB)
+      uint8_t colour = 6;
+      #endif
+
+      for (JsonVariant v : array)
+      {
+        ledColour[colour++] = v.as<uint8_t>();
+      }
+    }
+
+  if (json.containsKey("fadeIntervalUs"))
+  {
+    fadeIntervalUs = json["fadeIntervalUs"].as<uint32_t>();
   }
+  else
+  {
+    fadeIntervalUs = g_fade_interval_us;
+  }
+  #endif
 }
 
 void mqttCommand(JsonVariant json)
@@ -364,8 +532,12 @@ void initialiseWifi(byte * mac)
   logger.println(mac_display);
   logger.print(F("[AQS] ip address: "));
   logger.println(WiFi.localIP());
-  // turn pixel blue to show wifi connection
-  pixel_color(0,0,20);
+  // turn first led blue to show wifi connection
+  #if defined(LED_RGBW)
+  pixelDriver.colour(0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  #elif defined(LED_RGB)
+  pixelDriver.colour(0, 0, 20, 0, 0, 0, 0, 0, 0);
+  #endif
 }
 
 void initialiseMqtt(byte * mac)
@@ -409,10 +581,14 @@ void setup()
   char stack;
   g_stack_start = &stack;
 
-  // Set up LED indicator
-  pixel.begin();        // INITIALIZE NeoPixel strip object (REQUIRED)
-  pixel_off();          // Turn indicator off
-  pixel_color(20,0,0);  // Turn indicator red
+  // Set up LEDs
+  #if defined(LED_RGBW) 
+  pixelDriver.begin();
+  pixelDriver.colour(20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  #elif defined(LED_RGB)
+  pixelDriver.begin();
+  pixelDriver.colour(20, 0, 0, 0, 0, 0, 0, 0, 0);
+  #endif
 
   // Set up serial
   initialiseSerial();  
@@ -438,4 +614,8 @@ void loop()
   WiFiClient client = server.available();
   api.loop(&client);
 
+  if (ledMode == LED_MODE_MANUAL)
+  {
+    processPixels();
+  }
 }
