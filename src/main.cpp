@@ -43,6 +43,11 @@
 #include <OXRS_API.h>
 #include <MqttLogger.h>
 
+// IKEA sensor reading tools from
+// https://github.com/Hypfer/esp8266-vindriktning-particle-sensor
+#include <serialCom.h>
+#include <types.h>
+
 #if defined(LED_RGBW) || defined(LED_RGB)
 #include "ledPWMNeopixel.h"
 #endif
@@ -65,6 +70,9 @@
 // Default fade interval (microseconds)
 #define DEFAULT_FADE_INTERVAL_US    500L;
 
+// Update timing for IKEA sensor
+#define DEFAULT_IKEA_UPDATE_MS 60000
+
 /*--------------------------- Global Variables ---------------------------*/
 // stack size counter (for determine used heap size on ESP8266)
 char * g_stack_start;
@@ -82,6 +90,9 @@ uint8_t ledColour[12] = {0};
 uint32_t fadeIntervalUs = DEFAULT_FADE_INTERVAL_US;
 uint32_t lastFadeUs;
 
+//IKEA variables
+uint32_t updateMs = DEFAULT_IKEA_UPDATE_MS;
+uint32_t lastUpdate;
 
 /*--------------------------- Instantiate Global Objects -----------------*/
 // WiFi client
@@ -97,6 +108,9 @@ OXRS_API api(mqtt);
 
 // Logging
 MqttLogger logger(mqttClient, "log", MqttLoggerMode::MqttAndSerial);
+
+// Data structure for the IKEA sensor
+particleSensorState_t state;
 
 //add the ability to control LEDs with custom library
 #if defined(LED_RGBW) || defined(LED_RGB)
@@ -163,6 +177,13 @@ void getConfigSchemaJson(JsonVariant json)
   configSchema["type"] = "object";
 
   JsonObject properties = configSchema.createNestedObject("properties");
+
+  JsonObject updateSeconds = properties.createNestedObject("ikeaSensorUpdateSeconds");
+  updateSeconds["title"] = "IKEA Sensor Update Interval (seconds)";
+  updateSeconds["description"] = "How often to read and report the values from the IKEA sensor  (defaults to 60 seconds, setting to 0 disables sensor reports). Must be a number between 0 and 86400 (i.e. 1 day).";
+  updateSeconds["type"] = "integer";
+  updateSeconds["minimum"] = 0;
+  updateSeconds["maximum"] = 86400;
 
   JsonObject fadeIntervalUs = properties.createNestedObject("fadeIntervalUs");
   fadeIntervalUs["type"] = "integer";
@@ -378,6 +399,11 @@ void mqttCallback(char * topic, uint8_t * payload, unsigned int length)
 
 void mqttConfig(JsonVariant json)
 {
+  if (json.containsKey("ikeaSensorUpdateSeconds"))
+  {
+    updateMs = json["ikeaSensorUpdateSeconds"].as<uint32_t>() * 1000L;
+  }
+
   #if defined(LED_RGBW) || defined(LED_RGB)
   if (json.containsKey("fadeIntervalUs"))
   {
@@ -603,6 +629,9 @@ void setup()
   // Set up the REST API
   initialiseRestApi();
 
+  // Setup Ikea sensor software serial connection
+  serialCom::setup();
+
 }
 
 void loop()
@@ -617,5 +646,29 @@ void loop()
   if (ledMode == LED_MODE_MANUAL)
   {
     processPixels();
+  }
+
+  serialCom::handleUart(state);
+
+  if ((millis() - lastUpdate) > updateMs)
+  {
+    lastUpdate = millis();
+    Serial.println("update ready");
+
+    if (state.valid)
+    {
+      Serial.println("state valid");
+      if (updateMs == 0)
+      {
+        return;
+      }
+      DynamicJsonDocument json(500);
+      json["pm25"] = state.avgPM25;
+      if (!json.isNull())
+      {
+        Serial.println("sending data");
+        mqtt.publishTelemetry(json.as<JsonVariant>());
+      }
+    }
   }
 }
