@@ -5,7 +5,7 @@
     To be added
 
   GitHub repository:
-    To be added
+    https://github.com/austinscreations/OXRS-AC-vindriktning-ESP-FW
 
   Copyright 2022 Austins Creations
 
@@ -42,6 +42,7 @@
 #include <OXRS_MQTT.h>
 #include <OXRS_API.h>
 #include <MqttLogger.h>
+#include <OXRS_SENSORS.h>           // For QWICC I2C sensors
 
 // IKEA sensor reading tools from
 // https://github.com/Hypfer/esp8266-vindriktning-particle-sensor
@@ -124,6 +125,9 @@ MqttLogger logger(mqttClient, "log", MqttLoggerMode::MqttAndSerial);
 
 // Data structure for the IKEA sensor
 particleSensorState_t state;
+
+// I2C sensors
+OXRS_SENSORS sensors(mqtt);
 
 //add the ability to control LEDs with custom library
 #if defined(LED_RGBW) || defined(LED_RGB)
@@ -227,6 +231,8 @@ void getConfigSchemaJson(JsonVariant json)
   fadeIntervalUs["description"] = "Default time to fade from off -> on (and vice versa), in microseconds (defaults to 20000us)";
   #endif
 
+  // Add any sensor config
+  sensors.setConfigSchema(properties);
 }
 
 void getCommandSchemaJson(JsonVariant json)
@@ -311,6 +317,9 @@ void getCommandSchemaJson(JsonVariant json)
 
   JsonObject restart = properties.createNestedObject("restart");
   restart["type"] = "boolean";
+
+  // Add any sensor commands
+  sensors.setCommandSchema(properties);
 }
 
 void apiAdopt(JsonVariant json)
@@ -529,6 +538,9 @@ void mqttConfig(JsonVariant json)
     fadeIntervalUs = g_fade_interval_us;
   }
   #endif
+
+  // Let the sensors handle any config
+  sensors.conf(json);
 }
 
 void jsonLedCommand(JsonVariant json)
@@ -632,6 +644,9 @@ void mqttCommand(JsonVariant json)
   {
     ESP.restart();
   }
+
+  // Let the sensors handle any commands
+  sensors.cmnd(json);
 }
 
 /*--------------------------- Initialisation -------------------------------*/
@@ -655,15 +670,6 @@ void initialiseWifi(byte * mac)
   // Ensure we are in the correct WiFi mode
   WiFi.mode(WIFI_STA);
 
-  // Connect using saved creds, or start captive portal if none found
-  // Blocks until connected or the portal is closed
-  WiFiManager wm;
-  if (!wm.autoConnect("OXRS_WiFi", "superhouse"))
-  {
-    // If we are unable to connect then restart
-    ESP.restart();
-  }
-
   // Get WiFi base MAC address
   WiFi.macAddress(mac);
 
@@ -674,14 +680,36 @@ void initialiseWifi(byte * mac)
   // Display MAC/IP addresses on serial
   logger.print(F("[AQS] mac address: "));
   logger.println(mac_display);
+
+  // Update OLED display
+  sensors.oled(mac);
+
+  // Connect using saved creds, or start captive portal if none found
+  // Blocks until connected or the portal is closed
+  WiFiManager wm;
+  if (!wm.autoConnect("OXRS_WiFi", "superhouse"))
+  {
+    // If we are unable to connect then restart
+    ESP.restart();
+  }
+
+  // Update OLED display
+  sensors.oled(WiFi.localIP());
   logger.print(F("[AQS] ip address: "));
   logger.println(WiFi.localIP());
+
   // turn first led blue to show wifi connection
   #if defined(LED_RGBW)
   pixelDriver.colour(0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0);
   #elif defined(LED_RGB)
   pixelDriver.colour(0, 0, 20, 0, 0, 0, 0, 0, 0);
   #endif
+
+  // Set up MQTT (don't attempt to connect yet)
+  initialiseMqtt(mac);
+
+  // Set up the REST API once we have an IP address
+  initialiseRestApi();
 }
 
 void initialiseMqtt(byte * mac)
@@ -737,15 +765,15 @@ void setup()
   // Set up serial
   initialiseSerial();  
 
+  // Start the I2C bus
+  Wire.begin(I2C_SDA, I2C_SCL);
+
+  // Start the sensor library (scan for attached sensors)
+  sensors.begin();
+
   // Set up network and obtain an IP address
   byte mac[6];
   initialiseWifi(mac);
-
-  // initialise MQTT
-  initialiseMqtt(mac);
-
-  // Set up the REST API
-  initialiseRestApi();
 
   // Setup Ikea sensor software serial connection
   serialCom::setup();
