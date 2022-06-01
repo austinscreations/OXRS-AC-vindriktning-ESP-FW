@@ -665,6 +665,38 @@ void initialiseSerial()
   logger.println();
 }
 
+void initialiseMqtt(byte * mac)
+{
+  // Set the default client id to the last 3 bytes of the MAC address
+  char clientId[32];
+  sprintf_P(clientId, PSTR("%02x%02x%02x"), mac[3], mac[4], mac[5]);  
+  mqtt.setClientId(clientId);
+  
+  // Register our callbacks
+  mqtt.onConnected(mqttConnected);
+  mqtt.onDisconnected(mqttDisconnected);
+  mqtt.onConfig(mqttConfig);
+  mqtt.onCommand(mqttCommand);  
+
+  // Start listening for MQTT messages
+  mqttClient.setCallback(mqttCallback);  
+}
+
+void initialiseRestApi(void)
+{
+  // NOTE: this must be called *after* initialising MQTT since that sets
+  //       the default client id, which has lower precendence than MQTT
+  //       settings stored in file and loaded by the API
+
+  // Set up the REST API
+  api.begin();
+
+  // Register our callbacks
+  api.onAdopt(apiAdopt);
+
+  server.begin();
+}
+
 void initialiseWifi(byte * mac)
 {
   // Ensure we are in the correct WiFi mode
@@ -710,38 +742,6 @@ void initialiseWifi(byte * mac)
 
   // Set up the REST API once we have an IP address
   initialiseRestApi();
-}
-
-void initialiseMqtt(byte * mac)
-{
-  // Set the default client id to the last 3 bytes of the MAC address
-  char clientId[32];
-  sprintf_P(clientId, PSTR("%02x%02x%02x"), mac[3], mac[4], mac[5]);  
-  mqtt.setClientId(clientId);
-  
-  // Register our callbacks
-  mqtt.onConnected(mqttConnected);
-  mqtt.onDisconnected(mqttDisconnected);
-  mqtt.onConfig(mqttConfig);
-  mqtt.onCommand(mqttCommand);  
-
-  // Start listening for MQTT messages
-  mqttClient.setCallback(mqttCallback);  
-}
-
-void initialiseRestApi(void)
-{
-  // NOTE: this must be called *after* initialising MQTT since that sets
-  //       the default client id, which has lower precendence than MQTT
-  //       settings stored in file and loaded by the API
-
-  // Set up the REST API
-  api.begin();
-
-  // Register our callbacks
-  api.onAdopt(apiAdopt);
-
-  server.begin();
 }
 
 
