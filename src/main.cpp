@@ -53,6 +53,10 @@
 #endif
 
 /*--------------------------- Constants ----------------------------------*/
+// AQS Variables - used for auto mode leds
+#define LOW_PARTICLE_COUNT          13
+#define HIGH_PARTICLE_COUNT         36
+
 // Serial
 #define SERIAL_BAUD_RATE            115200
 
@@ -68,10 +72,13 @@
 #define LED_STATE_ON                1
 
 // Default fade interval (microseconds)
-#define DEFAULT_FADE_INTERVAL_US    500L;
+#define DEFAULT_FADE_INTERVAL_US    20000L;
 
 // Update timing for IKEA sensor
 #define DEFAULT_IKEA_UPDATE_MS 60000
+
+// Default auto mode led brightness
+#define DEFAULT_AUTO_BRIGHTNESS 50
 
 /*--------------------------- Global Variables ---------------------------*/
 // stack size counter (for determine used heap size on ESP8266)
@@ -79,6 +86,10 @@ char * g_stack_start;
 
 // Fade interval used if no explicit interval defined in command payload
 uint32_t g_fade_interval_us = DEFAULT_FADE_INTERVAL_US;
+uint32_t g_auto_fade_interval_us = DEFAULT_FADE_INTERVAL_US;
+
+// LED auto mode brightness
+uint8_t g_auto_brightness = DEFAULT_AUTO_BRIGHTNESS;
 
 // LED controls
 uint8_t ledMode = LED_MODE_AUTO;
@@ -88,11 +99,13 @@ uint8_t ledState = LED_STATE_OFF;
 // led variables
 uint8_t ledColour[12] = {0};
 uint32_t fadeIntervalUs = DEFAULT_FADE_INTERVAL_US;
-uint32_t lastFadeUs;
+unsigned long lastFadeUs;
+unsigned long lastAutoFadeUs;
 
 //IKEA variables
 uint32_t updateMs = DEFAULT_IKEA_UPDATE_MS;
 uint32_t lastUpdate;
+uint16_t ledPM = 0;
 
 /*--------------------------- Instantiate Global Objects -----------------*/
 // WiFi client
@@ -185,10 +198,31 @@ void getConfigSchemaJson(JsonVariant json)
   updateSeconds["minimum"] = 0;
   updateSeconds["maximum"] = 86400;
 
+  #if defined(LED_RGBW) || defined(LED_RGB)
+  JsonObject ledMode = properties.createNestedObject("ledMode");
+  ledMode["type"] = "string";
+  ledMode["description"] = "What mode led's should function in on startup (defaults to auto)";
+  JsonArray ledModeEnum = ledMode.createNestedArray("enum");
+  ledModeEnum.add("auto");
+  ledModeEnum.add("manual");
+
+  JsonObject autoFadeIntervalUs = properties.createNestedObject("autoFadeIntervalUs");
+  autoFadeIntervalUs["type"] = "integer";
+  autoFadeIntervalUs["minimum"] = 0;
+  autoFadeIntervalUs["description"] = "Controls color fading in Auto mode, in microseconds (defaults to 20000us)";
+
+  JsonObject autoBrightness = properties.createNestedObject("autoBrightness");
+  autoBrightness["type"] = "integer";
+  autoFadeIntervalUs["minimum"] = 0;
+  autoBrightness["maximum"] = 255;
+  autoBrightness["description"] = "Controls overall brightness of leds in auto mode (0-255 possible) (defaults to 50)";
+  
   JsonObject fadeIntervalUs = properties.createNestedObject("fadeIntervalUs");
   fadeIntervalUs["type"] = "integer";
   fadeIntervalUs["minimum"] = 0;
-  fadeIntervalUs["description"] = "Default time to fade from off -> on (and vice versa), in microseconds (defaults to 500us)";
+  fadeIntervalUs["description"] = "Default time to fade from off -> on (and vice versa), in microseconds (defaults to 20000us)";
+  #endif
+
 }
 
 void getCommandSchemaJson(JsonVariant json)
@@ -293,14 +327,68 @@ void ledFade(uint8_t colour[])
     #if defined(LED_RGBW) || defined(LED_RGB)
       #if defined(LED_RGBW)
         pixelDriver.crossfade(colour[0], colour[1], colour[2], colour[3], colour[4], colour[5], colour[6], colour[7], colour[8], colour[9], colour[10], colour[11]);
-        // pixelDriver.colour(colour[0], colour[1], colour[2], colour[3], colour[4], colour[5], colour[6], colour[7], colour[8], colour[9], colour[10], colour[11]);
       #elif defined(LED_RGB)
-        // pixelDriver.crossfade(colour[0], colour[1], colour[2], colour[3], colour[4], colour[5], colour[6], colour[7], colour[8]);
-        pixelDriver.colour(colour[0], colour[1], colour[2], colour[3], colour[4], colour[5], colour[6], colour[7], colour[8]);
+        pixelDriver.crossfade(colour[0], colour[1], colour[2], colour[3], colour[4], colour[5], colour[6], colour[7], colour[8]);
       #endif
     #endif
 
     lastFadeUs = micros();
+  }
+}
+
+void ledGreen()
+{
+  #if defined(LED_RGBW)
+    pixelDriver.crossfade(0, g_auto_brightness, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  #elif defined(LED_RGB)
+    pixelDriver.crossfade(0, g_auto_brightness, 0, 0, 0, 0, 0, 0, 0);
+  #endif
+}
+
+void ledYellow()
+{
+  #if defined(LED_RGBW)
+    pixelDriver.crossfade(0, 0, 0, 0, g_auto_brightness, g_auto_brightness, 0, 0, 0, 0, 0, 0);
+  #elif defined(LED_RGB)
+    pixelDriver.crossfade(0, 0, 0, g_auto_brightness, g_auto_brightness, 0, 0, 0, 0);
+  #endif
+}
+
+void ledRed()
+{
+  #if defined(LED_RGBW)
+    pixelDriver.crossfade(0, 0, 0, 0, 0, 0, 0, 0, g_auto_brightness, 0, 0, 0);
+  #elif defined(LED_RGB)
+    pixelDriver.crossfade(0, 0, 0, 0, 0, 0, g_auto_brightness, 0, 0);
+  #endif
+}
+
+void autoPixels()
+{
+  if ((micros() - lastAutoFadeUs) > g_auto_fade_interval_us)
+  {
+    if (state.valid)
+    {
+      DynamicJsonDocument json(10);
+      json["pm25"] = state.avgPM25;
+      if (!json.isNull())
+      {
+        ledPM = state.avgPM25;
+      }
+    }
+    if (ledPM < LOW_PARTICLE_COUNT)
+    {
+      ledGreen();
+    }
+    else if (ledPM > HIGH_PARTICLE_COUNT)
+    {
+      ledRed();
+    }
+    else
+    {
+      ledYellow();
+    }
+    lastAutoFadeUs = micros();
   }
 }
 
@@ -405,6 +493,32 @@ void mqttConfig(JsonVariant json)
   }
 
   #if defined(LED_RGBW) || defined(LED_RGB)
+  if (json.containsKey("ledMode"))
+  {
+    if (strcmp(json["mode"], "auto") == 0)
+    {
+      ledMode = LED_MODE_AUTO;
+    }
+    else if (strcmp(json["mode"], "manual") == 0)
+    {
+      ledMode = LED_MODE_MANUAL;
+    }
+    else 
+    {
+      logger.println(F("[AQS] invalid configured ledMode"));
+    }
+  }
+  
+  if (json.containsKey("autoFadeIntervalUs"))
+  {
+    g_auto_fade_interval_us = json["autoFadeIntervalUs"].as<uint32_t>();
+  }
+
+  if (json.containsKey("autoBrightness"))
+  {
+    g_auto_brightness = json["autoBrightness"].as<uint32_t>();
+  }
+
   if (json.containsKey("fadeIntervalUs"))
   {
     g_fade_interval_us = json["fadeIntervalUs"].as<uint32_t>();
@@ -643,31 +757,37 @@ void loop()
   WiFiClient client = server.available();
   api.loop(&client);
 
+  #if defined(LED_RGBW) || defined(LED_RGB)
   if (ledMode == LED_MODE_MANUAL)
   {
     processPixels();
   }
+  if (ledMode == LED_MODE_AUTO)
+  {
+    autoPixels();
+  }
+  #endif
 
   serialCom::handleUart(state);
 
   if ((millis() - lastUpdate) > updateMs)
   {
     lastUpdate = millis();
-    Serial.println("update ready");
+    logger.println(F("[AQS] tele update ready"));
 
     if (state.valid)
     {
-      Serial.println("state valid");
       if (updateMs == 0)
       {
         return;
       }
+      logger.println(F("[AQS] tele state valid"));
       DynamicJsonDocument json(500);
       json["pm25"] = state.avgPM25;
       if (!json.isNull())
       {
-        Serial.println("sending data");
         mqtt.publishTelemetry(json.as<JsonVariant>());
+        logger.println(F("[AQS] tele data sent"));
       }
     }
   }
